@@ -1,0 +1,15 @@
+# Python cache
+__pycache__/
+*.pyc
+
+# Local virtual environments
+.venv/
+
+# Large generated datasets
+shakespeare_char/*.bin
+tinystories/*.bin
+
+# Optional local checkpoints/artifacts
+*.pt
+*.pth
+*.ckpt

@@ -10,17 +10,25 @@ nanogpt/
 ├── main_v2.py           # Training script for bigram v2 (with attention)
 ├── main_v3.py           # Training script for bigram v3 (multi-head + layers)
 ├── main_v4.py           # Training script for bigram v4 (CPU limits!)
+├── main_v5.py           # Training script for bigram v5 (optimizations)
+├── main_v5_tinystories.py # Training v5 on TinyStories (1.9B tokens!)
 ├── bigram.py            # Bigram language model v1
 ├── bigram_v2.py         # Bigram language model v2 (with self-attention)
 ├── bigram_v3.py         # Bigram language model v3 (full transformer!)
 ├── bigram_v4.py         # Bigram language model v4 (scaled up, 1.2M params)
+├── bigram_v5.py         # Bigram language model v5 (GELU, weight tying, LR schedule)
 ├── attention.py         # Step-by-step attention implementation
-├── shakespeare_char/    # Character-level Shakespeare dataset
+├── shakespeare_char/    # Character-level Shakespeare dataset (~1M chars)
 │   ├── prepare.py       # Downloads and tokenizes data
 │   ├── input.txt        # Raw Shakespeare text
 │   ├── train.bin        # Tokenized training data
 │   ├── val.bin          # Tokenized validation data
 │   └── meta.pkl         # Vocab mappings (stoi, itos)
+├── tinystories/         # TinyStories dataset (~500M chars)
+│   ├── prepare.py       # Downloads from HuggingFace and tokenizes
+│   ├── train.bin        # Tokenized training data (generated)
+│   ├── val.bin          # Tokenized validation data (generated)
+│   └── meta.pkl         # Vocab mappings (generated)
 └── requirements.txt     # Dependencies
 ```
 
@@ -49,6 +57,14 @@ python main_v3.py
 
 # Train the v4 model (pushing CPU limits!) - ~2 hours on CPU
 python main_v4.py
+
+# Train the v5 model (optimizations) - ~2 hours on CPU
+python main_v5.py
+
+# Train v5 on TinyStories (where optimizations actually help!) - ~3 hours
+pip install datasets  # if needed
+python tinystories/prepare.py  # download ~500MB, tokenize
+python main_v5_tinystories.py
 ```
 
 ## What We've Built
@@ -336,7 +352,65 @@ Compare to:
 
 Even v4 with 1.2M params is **100x smaller** than GPT-2 small!
 
+### Data vs Parameters (Overfitting Risk)
+
+**The golden rule:** You want 10-100x more training tokens than parameters.
+
+**Our situation:**
+- Shakespeare: ~1M chars → ~900k training tokens
+- Model v4/v5: ~1.2M parameters
+- Ratio: **~0.75 tokens per parameter** (uh oh!)
+
+**Why we're not completely overfitting:**
+1. **Dropout (0.1)** - Randomly zeros out neurons during training, forcing redundancy
+2. **Weight decay (1e-2)** - AdamW penalizes large weights, encouraging simpler solutions
+3. **Early stopping** - We stop at 10k iters, not training to full convergence
+4. **Character-level structure** - Spelling/grammar patterns are learnable even with less data
+
+**How to spot overfitting:**
+- Watch the train/val gap: v4 got train ~1.43, val ~1.56 (gap of 0.13 is okay)
+- If gap grows to 0.3+ → definitely overfitting
+- If val loss stops improving while train loss drops → overfitting
+
+**What to do about it:**
+- Increase dropout (0.2 or 0.3)
+- Smaller model (~200k-500k params is probably the sweet spot for Shakespeare)
+- More data (TinyStories, Wikipedia, books)
+
+For learning purposes, we accept mild overfitting. For production, you'd want more data!
+
+### TinyStories Dataset
+
+Shakespeare is great for learning, but tiny (~1M chars). **TinyStories** is 500x larger!
+
+**What is TinyStories?**
+- ~2.5 million short stories written for children
+- Simple English vocabulary and grammar
+- Created by Microsoft Research specifically for training small language models
+- Source: [HuggingFace roneneldan/TinyStories](https://huggingface.co/datasets/roneneldan/TinyStories)
+
+**Why TinyStories?**
+| Dataset | Characters | Train Tokens | Tokens/1.2M Params |
+|---------|------------|--------------|-------------------|
+| Shakespeare | ~1M | ~900k | 0.75x (underfitting!) |
+| TinyStories | ~500M | ~450M | **375x** (plenty!) |
+
+With TinyStories, we can finally scale to larger models without overfitting.
+
+**Setup:**
+```bash
+# Install datasets library (if not already)
+pip install datasets
+
+# Download and prepare TinyStories (~500MB download, may take a few minutes)
+python tinystories/prepare.py
+```
+
+**Then update your training script** to point to `tinystories/` instead of `shakespeare_char/`.
+
 ## Model Comparison
+
+### Shakespeare Results
 
 | Model | Parameters | Final Loss | Perplexity | Training Time | Output Quality |
 |-------|-----------|------------|------------|---------------|----------------|
@@ -344,11 +418,106 @@ Even v4 with 1.2M params is **100x smaller** than GPT-2 small!
 | v2 (attention) | 4,977 | ~2.41 | ~11 | ~2 min | Slightly structured gibberish |
 | v3 (transformer) | 209,729 | ~1.77 | ~5.9 | ~3 min | Character names, dialogue, punctuation |
 | v4 (scaled) | **1,212,481** | **~1.56** | **~4.8** | ~114 min | Real names, coherent sentences! |
+| v5 (optimized) | 1,204,096 | ~1.86 | ~6.4 | ~166 min | GELU + weight tying + LR schedule |
 
-**The progression:**
+### TinyStories Results
+
+| Model | Parameters | Train Loss | Val Loss | Train/Val Gap | Training Time |
+|-------|-----------|------------|----------|---------------|---------------|
+| v5 (optimized) | 1,218,048 | **1.35** | **1.34** | **0.01** | ~163 min |
+
+**The vindication:** v5 achieved **1.34 loss** on TinyStories vs 1.86 on Shakespeare!
+- Train/val gap of 0.01 = **zero overfitting** (vs 0.15 gap on Shakespeare)
+- With 1563x tokens per parameter, the optimizations finally shine
+
+**The progression (Shakespeare):**
 - v1 → v2: Added self-attention (+0.07 loss improvement)
 - v2 → v3: Added multi-head, feed-forward, layers (+0.64 loss improvement)
 - v3 → v4: Scaled up params, depth, context (+0.21 loss improvement)
+- v4 → v5: Added GELU, weight tying, LR schedule (**-0.30 loss regression!**)
+- v5 + TinyStories: Same optimizations, 2000x more data → **1.34 loss!** ✓
+
+### Why Did v5 Perform WORSE on Shakespeare?
+
+Surprise! The "industry best practices" made things worse on Shakespeare. Here's why:
+
+1. **Weight tying constrains the model** - Forcing input/output to share weights works great with lots of data, but hurts when data is limited. The model has less flexibility.
+
+2. **LR warmup wasted steps** - 500 warmup steps on a 10k run = 5% of training spent ramping up. With tiny data, every step counts.
+
+3. **Shakespeare is too small** - These optimizations were designed for billion-token datasets. At ~900k tokens, they add overhead without benefit.
+
+4. **Overfitting territory** - At ~0.75 tokens/param, we're already overfitting. Regularization tricks for underfitting don't help here.
+
+**The lesson:** "Best practices" from large-scale training don't always transfer to small models/datasets. Always validate on your specific use case!
+
+**The fix:** We tried v5 on TinyStories (1.9B tokens) and it worked! Val loss dropped to **1.34** with essentially zero overfitting. The optimizations were vindicated - they just needed enough data.
+
+**Generated TinyStories sample:**
+```
+Tom had Emaying, "She fast yor comf cleal and it. II's carelfly.
+One day, there was neam. He said, he scolecored and Been to play big itch.
+Tommy's cared the buiked the reanimals.
+```
+(Still gibberish, but learning children's story patterns! The model is tiny for 1.9B tokens.)
+
+### v5 Optimizations Explained
+
+#### 1. GELU Activation (vs ReLU)
+
+**ReLU:** `max(0, x)` - Simple cutoff at zero
+- Problem: "Dead neurons" - if a neuron outputs negative, gradient = 0, it never recovers
+
+**GELU:** Smooth curve that mostly passes positive values but sometimes lets small negatives through
+- Used in GPT-2, GPT-3, BERT
+- Smoother gradients → better training
+- Think of ReLU as a light switch (on/off), GELU as a dimmer
+
+#### 2. Weight Tying
+
+**The insight:** The input embedding (char → vector) and output projection (vector → char probabilities) are doing opposite jobs. Why not share the same weights?
+
+```python
+# Instead of two separate matrices:
+self.token_embedding_table = nn.Embedding(vocab_size, n_embd)  # 65 × 128 = 8,320
+self.lm_head = nn.Linear(n_embd, vocab_size)                  # 128 × 65 = 8,320
+
+# Tie them together:
+self.lm_head.weight = self.token_embedding_table.weight  # Save 8,320 params!
+```
+
+**Why it works:**
+- If "A" maps to vector [0.5, 0.3, ...], then [0.5, 0.3, ...] should map back to "A"
+- Used in GPT-2 and most modern transformers
+- Saves parameters AND often improves quality (forces consistent representations)
+
+#### 3. Learning Rate Warmup + Cosine Decay
+
+**Problem:** Starting with a high learning rate can destabilize training early on.
+
+**Solution: Warmup**
+- Start with tiny LR (near 0)
+- Gradually increase to max LR over first 500 steps
+- Lets the model "warm up" before taking big steps
+
+**Problem:** A constant learning rate isn't optimal.
+
+**Solution: Cosine Decay**
+- After warmup, follow a cosine curve from max_lr down to min_lr
+- Fast initial learning (when loss is high), gentle refinement (when loss is low)
+
+```
+LR Schedule:
+     ↑
+max_lr ┤      ╭──────╮
+       │     ╱        ╲
+       │    ╱          ╲
+       │   ╱            ╲
+       │  ╱              ╲
+min_lr ┤ ╱                ╲_____
+       └──────────────────────────→
+         warmup    cosine decay
+```
 
 ## Next Steps
 
@@ -360,9 +529,12 @@ Even v4 with 1.2M params is **100x smaller** than GPT-2 small!
 6. ~~Scale up~~ ✅ Done in v4! (1.2M params)
 7. ~~Add dropout~~ ✅ Done in v4! (0.1)
 8. ~~Train longer~~ ✅ Done in v4! (10k steps)
-9. **GPU training** - Scale to 10M+ params, 100k+ steps
-10. **Larger datasets** - More than Shakespeare
-11. **BPE tokenization** - Word-level instead of character-level
+9. ~~GELU activation~~ ✅ Done in v5!
+10. ~~Weight tying~~ ✅ Done in v5!
+11. ~~LR warmup + cosine decay~~ ✅ Done in v5!
+12. ~~Larger datasets~~ ✅ Done! TinyStories (1.9B tokens)
+13. **GPU training** - Scale to 10M+ params, 100k+ steps
+14. **BPE tokenization** - Word-level instead of character-level
 
 ## References
 
