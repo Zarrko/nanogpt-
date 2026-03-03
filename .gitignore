@@ -8,6 +8,7 @@ __pycache__/
 # Large generated datasets
 shakespeare_char/*.bin
 tinystories/*.bin
+tinystories_bpe/*.bin
 
 # Optional local checkpoints/artifacts
 *.pt

@@ -12,11 +12,13 @@ nanogpt/
 ├── main_v4.py           # Training script for bigram v4 (CPU limits!)
 ├── main_v5.py           # Training script for bigram v5 (optimizations)
 ├── main_v5_tinystories.py # Training v5 on TinyStories (1.9B tokens!)
+├── main_v6_tinystories.py # Training v6 (BPE) on TinyStories
 ├── bigram.py            # Bigram language model v1
 ├── bigram_v2.py         # Bigram language model v2 (with self-attention)
 ├── bigram_v3.py         # Bigram language model v3 (full transformer!)
 ├── bigram_v4.py         # Bigram language model v4 (scaled up, 1.2M params)
 ├── bigram_v5.py         # Bigram language model v5 (GELU, weight tying, LR schedule)
+├── bigram_v6.py         # GPT language model v6 (BPE tokenization!)
 ├── attention.py         # Step-by-step attention implementation
 ├── shakespeare_char/    # Character-level Shakespeare dataset (~1M chars)
 │   ├── prepare.py       # Downloads and tokenizes data
@@ -29,6 +31,11 @@ nanogpt/
 │   ├── train.bin        # Tokenized training data (generated)
 │   ├── val.bin          # Tokenized validation data (generated)
 │   └── meta.pkl         # Vocab mappings (generated)
+├── tinystories_bpe/     # TinyStories with GPT-2 BPE tokenization
+│   ├── prepare.py       # Tokenizes with tiktoken GPT-2 BPE
+│   ├── train.bin        # BPE-tokenized training data (generated)
+│   ├── val.bin          # BPE-tokenized validation data (generated)
+│   └── meta.pkl         # Tokenizer metadata (generated)
 └── requirements.txt     # Dependencies
 ```
 
@@ -65,6 +72,11 @@ python main_v5.py
 pip install datasets  # if needed
 python tinystories/prepare.py  # download ~500MB, tokenize
 python main_v5_tinystories.py
+
+# Train v6 (BPE) on TinyStories - the real GPT experience!
+pip install tiktoken datasets  # if needed
+python tinystories_bpe/prepare.py  # tokenize with GPT-2 BPE
+python main_v6_tinystories.py
 ```
 
 ## What We've Built
@@ -422,10 +434,20 @@ python tinystories/prepare.py
 
 ### TinyStories Results
 
+**Character-level (v5):**
+
 | Model | Steps | Parameters | Train Loss | Val Loss | Train/Val Gap | Training Time |
 |-------|-------|-----------|------------|----------|---------------|---------------|
 | v5 (10k steps) | 10,000 | 1,218,048 | 1.35 | 1.34 | 0.01 | ~163 min |
 | v5 (20k steps) | 20,000 | 1,218,048 | **1.08** | **1.08** | **0.003** | ~213 min |
+
+**BPE (v6):**
+
+| Model | Steps | Parameters | Train Loss | Val Loss | Train/Val Gap | Training Time |
+|-------|-------|-----------|------------|----------|---------------|---------------|
+| v6 BPE (20k) | 20,000 | 3,523,520 | 3.68 | 3.69 | 0.01 | ~351 min |
+
+> **Note:** v5 and v6 losses are NOT directly comparable! v5 predicts from 174 characters, v6 predicts from 50,257 BPE tokens. Higher vocab = higher loss numbers. The real comparison is output quality.
 
 **The vindication:** v5 achieved **1.08 loss** on TinyStories vs 1.86 on Shakespeare!
 - Train/val gap of 0.003 = **zero overfitting** (vs 0.15 gap on Shakespeare)
@@ -438,6 +460,7 @@ python tinystories/prepare.py
 - v3 → v4: Scaled up params, depth, context (+0.21 loss improvement)
 - v4 → v5: Added GELU, weight tying, LR schedule (**-0.30 loss regression!**)
 - v5 + TinyStories: Same optimizations, 2000x more data → **1.08 loss!** ✓
+- v6 + BPE: GPT-2 tokenizer, real words → **3.69 loss** (not comparable, but real English output!)
 
 ### Why Did v5 Perform WORSE on Shakespeare?
 
@@ -455,13 +478,25 @@ Surprise! The "industry best practices" made things worse on Shakespeare. Here's
 
 **The fix:** We tried v5 on TinyStories (1.9B tokens) and it worked! Val loss dropped to **1.08** with essentially zero overfitting. The optimizations were vindicated - they just needed enough data.
 
-**Generated TinyStories sample (20k steps):**
+**Generated TinyStories sample (v5 char-level, 20k steps):**
 ```
 She had an a laughed Lily and said, "Let's a face!"
 So, But the tricket stood the fet down it was a breshing hill.
 Ben specoriald a big with and smelled that them hunt to want to be friends
 are a goiny. She played and say to her toys Bed.
 ```
+(Learning patterns but producing character-level gibberish. Needs more params!)
+
+**Generated TinyStories sample (v6 BPE, 20k steps):**
+```
+The little girl said, "Don't get doing. So, Lily. I love you."
+She was happy. She said, "Yes, let's go. I'm good, you are
+what to be kind." Her mom smiled and she said, "Thank you."
+
+Once upon a time, there was a boy named Tim had a little girl
+named Timmy. One day, Timmy who liked to play.
+```
+**Real words! Real dialogue! Real story structure!** This is the power of BPE — every generated token is an actual word or subword, so there's no more spelling gibberish.
 (Learning children's story patterns — names, dialogue, "friends", "played" — but still gibberish at 1.2M params. The model is underfitting: needs more params or longer training!)
 (Still gibberish, but learning children's story patterns! The model is tiny for 1.9B tokens.)
 
@@ -523,6 +558,52 @@ min_lr ┤ ╱                ╲_____
          warmup    cosine decay
 ```
 
+### v6: BPE Tokenization
+
+The biggest conceptual upgrade: moving from character-level to **subword-level** tokenization!
+
+#### What is BPE?
+
+**Character-level** (v1-v5): Every character is a token
+```
+"Hello world" → ['H','e','l','l','o',' ','w','o','r','l','d'] → 11 tokens
+```
+
+**BPE** (Byte Pair Encoding, v6): Common character sequences merge into single tokens
+```
+"Hello world" → ['Hello', ' world'] → 2 tokens!
+```
+
+**How BPE works (like a five-year-old):**
+1. Start with individual characters: `['H', 'e', 'l', 'l', 'o']`
+2. Find the most common pair → `'l'+'l'` appears a lot → merge into `'ll'`
+3. Now find next most common pair → `'He'` → merge into `'He'`
+4. Keep merging until you have ~50,000 tokens
+5. Common words become single tokens: `"the"`, `"Hello"`, `" and"`
+6. Rare words split into subwords: `"tokenization"` → `["token", "ization"]`
+
+GPT-2 uses 50,257 BPE tokens trained on a huge internet corpus.
+
+#### The Architecture Trade-off
+
+| | v5 (char-level) | v6 (BPE) |
+|---|---|---|
+| Vocab size | 174 | **50,257** |
+| Embedding params | 22k | **3.2M** (91% of model!) |
+| Transformer params | 1.2M | 299k |
+| Total params | 1,218,048 | **3,523,520** |
+| n_embd | 128 | 64 (reduced to offset huge vocab) |
+| block_size | 64 chars | 128 BPE tokens ≈ **512 chars** |
+| Context window | 64 characters | ~512 characters (**8x more!**) |
+
+**Key insight:** With BPE, the embedding table dominates (91% of params!). We reduced `n_embd` from 128→64 to keep things CPU-trainable, but the model still grew 3x.
+
+**Why it's worth it:**
+- Each token carries more meaning (whole words vs single letters)
+- 8x more context in the same block_size
+- Generated text will be **real words** instead of character-level approximations
+- This is how GPT-2, GPT-3, ChatGPT actually work!
+
 ## Next Steps
 
 1. ~~Add self-attention~~ ✅ Done in v2!
@@ -538,9 +619,10 @@ min_lr ┤ ╱                ╲_____
 11. ~~LR warmup + cosine decay~~ ✅ Done in v5!
 12. ~~Larger datasets~~ ✅ Done! TinyStories (1.9B tokens)
 13. **GPU training** - Scale to 10M+ params, 100k+ steps
-14. **BPE tokenization** - Word-level instead of character-level
+14. ~~BPE tokenization~~ ✅ Done in v6! (GPT-2 BPE, 50,257 vocab)
 
 ## References
 
 - [Andrej Karpathy's "Let's build GPT" video](https://www.youtube.com/watch?v=kCc8FmEb1nY)
 - [Attention Is All You Need (Transformer paper)](https://arxiv.org/abs/1706.03762)
+ 
