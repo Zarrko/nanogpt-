@@ -422,20 +422,22 @@ python tinystories/prepare.py
 
 ### TinyStories Results
 
-| Model | Parameters | Train Loss | Val Loss | Train/Val Gap | Training Time |
-|-------|-----------|------------|----------|---------------|---------------|
-| v5 (optimized) | 1,218,048 | **1.35** | **1.34** | **0.01** | ~163 min |
+| Model | Steps | Parameters | Train Loss | Val Loss | Train/Val Gap | Training Time |
+|-------|-------|-----------|------------|----------|---------------|---------------|
+| v5 (10k steps) | 10,000 | 1,218,048 | 1.35 | 1.34 | 0.01 | ~163 min |
+| v5 (20k steps) | 20,000 | 1,218,048 | **1.08** | **1.08** | **0.003** | ~213 min |
 
-**The vindication:** v5 achieved **1.34 loss** on TinyStories vs 1.86 on Shakespeare!
-- Train/val gap of 0.01 = **zero overfitting** (vs 0.15 gap on Shakespeare)
+**The vindication:** v5 achieved **1.08 loss** on TinyStories vs 1.86 on Shakespeare!
+- Train/val gap of 0.003 = **zero overfitting** (vs 0.15 gap on Shakespeare)
 - With 1563x tokens per parameter, the optimizations finally shine
+- Loss was **still dropping** at 20k steps — the model is underfitting (opposite of Shakespeare!)
 
 **The progression (Shakespeare):**
 - v1 → v2: Added self-attention (+0.07 loss improvement)
 - v2 → v3: Added multi-head, feed-forward, layers (+0.64 loss improvement)
 - v3 → v4: Scaled up params, depth, context (+0.21 loss improvement)
 - v4 → v5: Added GELU, weight tying, LR schedule (**-0.30 loss regression!**)
-- v5 + TinyStories: Same optimizations, 2000x more data → **1.34 loss!** ✓
+- v5 + TinyStories: Same optimizations, 2000x more data → **1.08 loss!** ✓
 
 ### Why Did v5 Perform WORSE on Shakespeare?
 
@@ -451,14 +453,16 @@ Surprise! The "industry best practices" made things worse on Shakespeare. Here's
 
 **The lesson:** "Best practices" from large-scale training don't always transfer to small models/datasets. Always validate on your specific use case!
 
-**The fix:** We tried v5 on TinyStories (1.9B tokens) and it worked! Val loss dropped to **1.34** with essentially zero overfitting. The optimizations were vindicated - they just needed enough data.
+**The fix:** We tried v5 on TinyStories (1.9B tokens) and it worked! Val loss dropped to **1.08** with essentially zero overfitting. The optimizations were vindicated - they just needed enough data.
 
-**Generated TinyStories sample:**
+**Generated TinyStories sample (20k steps):**
 ```
-Tom had Emaying, "She fast yor comf cleal and it. II's carelfly.
-One day, there was neam. He said, he scolecored and Been to play big itch.
-Tommy's cared the buiked the reanimals.
+She had an a laughed Lily and said, "Let's a face!"
+So, But the tricket stood the fet down it was a breshing hill.
+Ben specoriald a big with and smelled that them hunt to want to be friends
+are a goiny. She played and say to her toys Bed.
 ```
+(Learning children's story patterns — names, dialogue, "friends", "played" — but still gibberish at 1.2M params. The model is underfitting: needs more params or longer training!)
 (Still gibberish, but learning children's story patterns! The model is tiny for 1.9B tokens.)
 
 ### v5 Optimizations Explained
