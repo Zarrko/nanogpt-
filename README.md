@@ -13,12 +13,14 @@ nanogpt/
 ├── main_v5.py           # Training script for bigram v5 (optimizations)
 ├── main_v5_tinystories.py # Training v5 on TinyStories (1.9B tokens!)
 ├── main_v6_tinystories.py # Training v6 (BPE) on TinyStories
+├── main_v7_tinystories.py # Training v7 (10M params!) on TinyStories
 ├── bigram.py            # Bigram language model v1
 ├── bigram_v2.py         # Bigram language model v2 (with self-attention)
 ├── bigram_v3.py         # Bigram language model v3 (full transformer!)
 ├── bigram_v4.py         # Bigram language model v4 (scaled up, 1.2M params)
 ├── bigram_v5.py         # Bigram language model v5 (GELU, weight tying, LR schedule)
 ├── bigram_v6.py         # GPT language model v6 (BPE tokenization!)
+├── bigram_v7.py         # GPT language model v7 (10M params!)
 ├── attention.py         # Step-by-step attention implementation
 ├── shakespeare_char/    # Character-level Shakespeare dataset (~1M chars)
 │   ├── prepare.py       # Downloads and tokenizes data
@@ -36,6 +38,7 @@ nanogpt/
 │   ├── train.bin        # BPE-tokenized training data (generated)
 │   ├── val.bin          # BPE-tokenized validation data (generated)
 │   └── meta.pkl         # Tokenizer metadata (generated)
+├── nanogpt_v7_colab.ipynb # Google Colab notebook (GPU training!)
 └── requirements.txt     # Dependencies
 ```
 
@@ -77,7 +80,22 @@ python main_v5_tinystories.py
 pip install tiktoken datasets  # if needed
 python tinystories_bpe/prepare.py  # tokenize with GPT-2 BPE
 python main_v6_tinystories.py
+
+# Train v7 (10M params!) on TinyStories BPE - scaling up!
+python main_v7_tinystories.py  # WARNING: ~10-15 hours on CPU!
 ```
+
+### Google Colab (Free GPU!)
+
+Training v7 on CPU takes 10-15 hours. On Colab's free T4 GPU, it's **~15-30 minutes**.
+
+1. Open [nanogpt_v7_colab.ipynb](nanogpt_v7_colab.ipynb) in Colab
+   - Go to [colab.research.google.com](https://colab.research.google.com)
+   - File → Upload notebook → select `nanogpt_v7_colab.ipynb`
+2. Enable GPU: Runtime → Change runtime type → **T4 GPU**
+3. Run all cells (Ctrl+F9)
+
+The notebook is fully self-contained — it downloads data, defines the model, trains, and generates text, all in one place.
 
 ## What We've Built
 
@@ -357,12 +375,14 @@ For example:
 - v2: Only 4,977 parameters (still tiny!)
 - v3: ~210k parameters (still manageable!)
 - v4: ~1.2M parameters (pushing the limits!)
+- v6: ~3.5M parameters (several hours)
+- v7: ~10.6M parameters (10-15 hours! CPU's last stand)
 
 Compare to:
 - GPT-2 small: 124 million parameters
 - GPT-3: 175 billion parameters
 
-Even v4 with 1.2M params is **100x smaller** than GPT-2 small!
+Even v7 with 10.6M params is **12x smaller** than GPT-2 small!
 
 ### Data vs Parameters (Overfitting Risk)
 
@@ -461,6 +481,7 @@ python tinystories/prepare.py
 - v4 → v5: Added GELU, weight tying, LR schedule (**-0.30 loss regression!**)
 - v5 + TinyStories: Same optimizations, 2000x more data → **1.08 loss!** ✓
 - v6 + BPE: GPT-2 tokenizer, real words → **3.69 loss** (not comparable, but real English output!)
+- v7 + Scale + GPU: 10.6M params, T4 GPU → **2.17 loss** in 83 min! Multi-paragraph stories!
 
 ### Why Did v5 Perform WORSE on Shakespeare?
 
@@ -497,8 +518,83 @@ Once upon a time, there was a boy named Tim had a little girl
 named Timmy. One day, Timmy who liked to play.
 ```
 **Real words! Real dialogue! Real story structure!** This is the power of BPE — every generated token is an actual word or subword, so there's no more spelling gibberish.
-(Learning children's story patterns — names, dialogue, "friends", "played" — but still gibberish at 1.2M params. The model is underfitting: needs more params or longer training!)
-(Still gibberish, but learning children's story patterns! The model is tiny for 1.9B tokens.)
+(Learning children's story patterns — names, dialogue, "friends", "played" — but still at 3.5M params, the model is underfitting.)
+
+### v7: Scaling to 10M Parameters
+
+The natural next step: more params! We scaled to ~10.6M to give the transformer more capacity.
+
+#### Architecture: v6 → v7
+
+| | v6 (BPE) | v7 (10M) |
+|---|---|---|
+| n_embd | 64 | **160** (2.5x wider) |
+| n_head | 8 | 8 |
+| head_size | 8 | **20** |
+| n_layer | 6 | **8** (deeper) |
+| block_size | 128 | **256** (2x context) |
+| Context window | ~512 chars | **~1024 chars** |
+| Embedding params | 3.2M (91%) | **8.0M (76%)** |
+| Transformer params | 299k (9%) | **2.5M (23%)** |
+| Total params | 3,523,520 | **10,552,800** |
+
+#### The Embedding Tax
+
+With 50k BPE vocab, the embedding table (`vocab_size × n_embd`) eats most of the param budget:
+
+```
+v6:  50,257 × 64  = 3.2M  (91% of 3.5M total)
+v7:  50,257 × 160 = 8.0M  (76% of 10.6M total)
+GPT-2: 50,257 × 768 = 38.6M (31% of 124M total)
+```
+
+As models grow, the embedding fraction shrinks — more params go into the transformer blocks where the "thinking" happens. At 10.6M, we're at 76% embedding, which is better than v6's 91% but still embedding-heavy.
+
+**The fix (for future versions):** Decouple embedding dimension from model dimension with a projection layer. Use small embeddings (e.g., 64-dim) and project up to the model dimension (e.g., 256-dim).
+
+#### Training Configuration (v7)
+
+```python
+batch_size = 32          # On T4 GPU (16 on CPU)
+max_iters = 10_000       # Half of v6's 20k
+max_lr = 3e-4            # Same schedule as v5/v6
+warmup_steps = 500       # LR warmup then cosine decay
+eval_interval = 500
+```
+
+**Training:** ~83 minutes on T4 GPU (Google Colab free tier) vs ~10-15 hours on CPU.
+
+**BPE TinyStories Results:**
+
+| Model | Steps | Parameters | Train Loss | Val Loss | Train/Val Gap | Training Time |
+|-------|-------|-----------|------------|----------|---------------|---------------|
+| v6 BPE (20k) | 20,000 | 3,523,520 | 3.68 | 3.69 | 0.01 | ~351 min (CPU) |
+| **v7 BPE (10k)** | **10,000** | **10,552,800** | **2.17** | **2.17** | **0.008** | **~83 min (T4 GPU)** |
+
+**v7 crushed v6:** Loss dropped from 3.69 to 2.17 in half the steps! And loss was still dropping at step 10k — more training would help further.
+
+**Generated TinyStories sample (v7 BPE, 10k steps):**
+```
+The man was so happy. He said, "It's so nice. I will always remember it."
+The man smiled and said, "Thank you for helping me. Now I will always
+remember it."
+
+Once upon a time, there was a curious boy called Tom. Tom loved to explore
+the world around him. Every day, he would wander around the woods and find
+new things to explore.
+
+One day Tom met a rabbit named Sammy. Sammy was very brave and he wanted
+to explore a new place.
+```
+
+**Compare to v6 (3.5M, 20k steps):**
+```
+The little girl said, "Don't get doing. So, Lily. I love you."
+She was happy. She said, "Yes, let's go. I'm good, you are
+what to be kind."
+```
+
+v7 generates **multi-paragraph stories** with character names, dialogue, plot arcs, and emotional content. v6 could only manage a few basic sentences.
 
 ### v5 Optimizations Explained
 
@@ -618,8 +714,11 @@ GPT-2 uses 50,257 BPE tokens trained on a huge internet corpus.
 10. ~~Weight tying~~ ✅ Done in v5!
 11. ~~LR warmup + cosine decay~~ ✅ Done in v5!
 12. ~~Larger datasets~~ ✅ Done! TinyStories (1.9B tokens)
-13. **GPU training** - Scale to 10M+ params, 100k+ steps
+13. ~~Scale to 10M params~~ ✅ Done in v7! (10.6M params, n_embd=160, 8 layers)
 14. ~~BPE tokenization~~ ✅ Done in v6! (GPT-2 BPE, 50,257 vocab)
+15. ~~GPU training~~ ✅ Done! Google Colab T4 GPU, 83 min for 10k steps
+16. **Scale further** - 100M+ params, 100k+ steps
+17. **Embedding projection** - Decouple embedding dim from model dim to reduce embedding tax
 
 ## References
 

@@ -57,37 +57,46 @@ print(f"  Character tokens: {len(char_tokens)} tokens")
 print(f"  BPE tokens: {len(bpe_tokens)} tokens ({len(char_tokens)/len(bpe_tokens):.1f}x compression)")
 print(f"  BPE decoded: {[enc.decode([t]) for t in bpe_tokens]}")
 
-# Tokenize all stories
-print("\nTokenizing training data with BPE (this may take a while)...")
-train_ids = []
-for i, story in enumerate(dataset['train']):
-    ids = enc.encode_ordinary(story['text'])
-    train_ids.extend(ids)
-    if (i + 1) % 500_000 == 0:
-        print(f"  Processed {i+1:,} / {len(dataset['train']):,} train stories...")
+# Tokenize and write to disk in CHUNKS to avoid OOM!
+# Why? 472M Python ints × 28 bytes each ≈ 13GB RAM. Stream to disk instead.
+CHUNK_SIZE = 50_000  # stories per chunk
 
-print(f"Train BPE tokens: {len(train_ids):,}")
+def tokenize_to_file(split, filepath):
+    """Tokenize a dataset split and stream to disk in chunks."""
+    data = dataset[split]
+    n_stories = len(data)
+    total_tokens = 0
 
-print("\nTokenizing validation data with BPE...")
-val_ids = []
-for story in dataset['validation']:
-    ids = enc.encode_ordinary(story['text'])
-    val_ids.extend(ids)
+    with open(filepath, 'wb') as f:
+        for start in range(0, n_stories, CHUNK_SIZE):
+            end = min(start + CHUNK_SIZE, n_stories)
+            chunk_ids = []
+            for i in range(start, end):
+                chunk_ids.extend(enc.encode_ordinary(data[i]['text']))
 
-print(f"Val BPE tokens: {len(val_ids):,}")
+            # Convert chunk to uint16 and write immediately, then free memory
+            chunk_arr = np.array(chunk_ids, dtype=np.uint16)
+            chunk_arr.tofile(f)
+            total_tokens += len(chunk_ids)
+
+            print(f"  {end:,} / {n_stories:,} stories ({total_tokens:,} tokens)")
+
+    return total_tokens
+
+print("\nTokenizing training data (streaming to disk)...")
+output_dir = os.path.dirname(__file__)
+train_path = os.path.join(output_dir, 'train.bin')
+n_train = tokenize_to_file('train', train_path)
+print(f"Train BPE tokens: {n_train:,}")
+
+print("\nTokenizing validation data...")
+val_path = os.path.join(output_dir, 'val.bin')
+n_val = tokenize_to_file('validation', val_path)
+print(f"Val BPE tokens: {n_val:,}")
 
 # Save to binary files
-print("\nSaving to binary files...")
-output_dir = os.path.dirname(__file__)
+print("\nSaving metadata...")
 
-# Use uint16 - GPT-2 vocab is 50,257 which fits in uint16 (max 65,535)
-train_ids = np.array(train_ids, dtype=np.uint16)
-val_ids = np.array(val_ids, dtype=np.uint16)
-
-train_path = os.path.join(output_dir, 'train.bin')
-val_path = os.path.join(output_dir, 'val.bin')
-train_ids.tofile(train_path)
-val_ids.tofile(val_path)
 print(f"Saved {train_path} ({os.path.getsize(train_path) / 1e6:.1f} MB)")
 print(f"Saved {val_path} ({os.path.getsize(val_path) / 1e6:.1f} MB)")
 
@@ -106,11 +115,11 @@ print("\n" + "=" * 60)
 print("TinyStories BPE dataset prepared!")
 print("=" * 60)
 print(f"Tokenizer: GPT-2 BPE ({vocab_size:,} tokens)")
-print(f"Train BPE tokens: {len(train_ids):,}")
-print(f"Val BPE tokens: {len(val_ids):,}")
-print(f"Total BPE tokens: {len(train_ids) + len(val_ids):,}")
+print(f"Train BPE tokens: {n_train:,}")
+print(f"Val BPE tokens: {n_val:,}")
+print(f"Total BPE tokens: {n_train + n_val:,}")
 print()
 print("Comparison to character-level:")
-print(f"  Char tokens: ~1,904M  →  BPE tokens: ~{len(train_ids)/1e6:.0f}M")
-print(f"  Compression ratio: ~{1_904_000_000/len(train_ids):.1f}x fewer tokens")
+print(f"  Char tokens: ~1,904M  →  BPE tokens: ~{n_train/1e6:.0f}M")
+print(f"  Compression ratio: ~{1_904_000_000/n_train:.1f}x fewer tokens")
 print(f"  But each token carries more meaning!")
